@@ -41,7 +41,7 @@ loop(Socket,DataPid,Is_auth) ->
             void;
         {tcp,Socket,Bin} ->
             %获取协议命令码
-            {CmdCode,MsgLen} = protocol_pro:get_protocol_cmd(Bin),
+            <<MsgLen:16,CmdCode:16,RestBin/binary>> = Bin,
             case Is_auth of
                 true ->
                     %根据命令码进行分配处理
@@ -62,8 +62,6 @@ loop(Socket,DataPid,Is_auth) ->
                     loop(Socket,DataPid,Is_auth)
             end;
         {tcp_closed,Socket} ->
-            %下线，从客户端列表删除Socket
-            %ManagerClientPid ! {disconnected,Socket},
             %客户端下线，将客户端的Socket从列表删除
             DataPid ! {del_user_info,Socket},
             DataPid ! {del_online,Socket},
@@ -74,17 +72,20 @@ loop(Socket,DataPid,Is_auth) ->
 %根据协议命令对消息进行分配处理
 dispatcher(Cmdcode,MsgLen,Bin,Socket,DataPid) ->
     %首先完成对数据包的协议分解
-    GetData = protocol_pro:cmdcode_match(Cmdcode,MsgLen,Bin),
-
-    case Cmdcode of
-        ?REGISTER_CMD_ID -> register_handler(GetData,Socket,DataPid);
-        ?LOGIN_CMD_ID -> login_handler(GetData,Socket,DataPid);
-        ?WHOONLINE_CMD_ID -> who_online(GetData,Socket,DataPid);
-        ?CHAT_SEND_CMD_ID -> chat_send(GetData,Socket,DataPid);
-        ?CHAT_REV_CMD_ID -> chat_rev(GetData,Socket,DataPid);
-        ?LOGIN_TIMES_CMD_ID -> login_times(GetData,Socket,DataPid);
-        ?FNDONLINE_CMD_ID -> online_name(GetData,Socket,DataPid);
-        ?CHAT_TIMES_CMD_ID -> chat_times(GetData,Socket,DataPid)
+    case read_pt:read(Bin) of
+        {ok,RevData} -> 
+            GetData = list_to_tuple(RevData),
+            case Cmdcode of
+                ?REGISTER_CMD_ID -> register_handler(GetData,Socket,DataPid);
+                ?LOGIN_CMD_ID -> login_handler(GetData,Socket,DataPid);
+                ?WHOONLINE_CMD_ID -> who_online(GetData,Socket,DataPid);
+                ?CHAT_SEND_CMD_ID -> chat_send(GetData,Socket,DataPid);
+                ?CHAT_REV_CMD_ID -> chat_rev(GetData,Socket,DataPid);
+                ?LOGIN_TIMES_CMD_ID -> login_times(GetData,Socket,DataPid);
+                ?FNDONLINE_CMD_ID -> online_name(GetData,Socket,DataPid);
+                ?CHAT_TIMES_CMD_ID -> chat_times(GetData,Socket,DataPid)
+           end;
+        {error,no_match} -> ?DEBUG("error:no_match")
     end.
 
 %应答注册请求
@@ -95,11 +96,11 @@ register_handler(Data,Socket,_DataPid) ->
             NewId = chat_data:get_new_id(),
             chat_data:add_user(NewId,Name,Psw),
             SendData = {?SUCCEED,NewId},
-            SendBin = protocol_pro:cmdcode_pack(?REGISTER_CMD_ID,SendData),
+            SendBin = write_pt:write(10101,?CMD_10101,tuple_to_list(SendData)),
             sendto(Socket,SendBin);
         _Other ->
             SendData = {?FALSE,0},
-            SendBin = protocol_pro:cmdcode_pack(?REGISTER_CMD_ID,SendData),
+            SendBin = write_pt:write(10101,?CMD_10101,tuple_to_list(SendData)),
             sendto(Socket,SendBin)
     end.
 
@@ -114,7 +115,8 @@ login_handler(Data,Socket,DataPid) ->
         {get_socket,OnlineSocket} -> 
             %对应答协议包封包
             PackData = {2,UserId,""},
-            SendBin = protocol_pro:cmdcode_pack(?LOGIN_CMD_ID,PackData),
+
+            SendBin = write_pt:write(10001,?CMD_10001,tuple_to_list(PackData)),
             sendto(OnlineSocket,SendBin),
             io:format("User(Sokcet:~p) ~p has online,try to login with socket~p now!~n",[OnlineSocket,UserId,Socket]);
         _ -> io:format("Cann't not find online!~n")
@@ -189,13 +191,13 @@ auth_feedback(UserId,_DataPid,Socket,Is_auth) ->
         true ->
             %对应答协议包封包
             Data = {?SUCCEED,UserId,""},
-            SendBin = protocol_pro:cmdcode_pack(?LOGIN_CMD_ID,Data),
+            SendBin = write_pt:write(10001,?CMD_10001,tuple_to_list(Data)),
             sendto(Socket,SendBin),
             true;
 
         false ->
             Data = {?FALSE,0,""},
-            SendBin = protocol_pro:cmdcode_pack(?LOGIN_CMD_ID,Data),
+            SendBin = write_pt:write(10001,?CMD_10001,tuple_to_list(Data)),
             sendto(Socket,SendBin),
             false
     end.
@@ -220,8 +222,7 @@ who_online(BinData,Socket,DataPid) ->
     receive
         {online,N} -> 
             ResponseData = {0,N},
-            ResponseBin = 
-                    protocol_pro:cmdcode_pack(Command_Id,ResponseData),
+            ResponseBin = write_pt:write(10002,?CMD_10002,tuple_to_list(ResponseData)),
             sendto(Socket,ResponseBin);
         _Other -> void
     end.
@@ -238,8 +239,7 @@ chat_send(BinData,Socket,DataPid) ->
         [{_,UserId,UserName}] ->
              %对应答内容进行封包处理
              Data = {UserId,UserName,?SUCCEED,Send_Data},
-             SendBin = protocol_pro:cmdcode_pack(?CHAT_REV_CMD_ID,Data),
-             
+             SendBin = write_pt:write(10005,?CMD_10005,tuple_to_list(Data)),
              case Rev_User_Name of
                  "" -> %群发
                     DataPid ! {all_online_socket,self()},
@@ -256,7 +256,7 @@ chat_send(BinData,Socket,DataPid) ->
                              BackStr = "error:user is offline,failed to send msg!",
                              io:format("~p,~p~n",[BackStr,Send_Data]),
                              BackData = {UserId,UserName,?SUCCEED,BackStr},
-                             BackBin = protocol_pro:cmdcode_pack(?CHAT_REV_CMD_ID,BackData),
+                             BackBin = write_pt:write(10005,?CMD_10005,tuple_to_list(BackData)),
                              sendto(Socket,BackBin),
                              io:format("user ~p not online~n",[Rev_User_Name]);
                          {get_socket_f_name,USocket} -> sendto(USocket,SendBin)
@@ -282,7 +282,7 @@ login_times(RevData,Socket,DataPid) ->
     receive
         {login_times,LoginTimes} -> 
             Data = {0,LoginTimes},
-            SendBin = protocol_pro:cmdcode_pack(?LOGIN_TIMES_CMD_ID,Data),
+            SendBin = write_pt:write(10006,?CMD_10006,tuple_to_list(Data)),
             sendto(Socket,SendBin);
         _Other -> io:format("connector login_times error!~n")
     end.
@@ -296,7 +296,7 @@ chat_times(RevData,Socket,DataPid) ->
     receive
         {chat_times,ChatTimes} -> 
             Data = {0,ChatTimes},
-            SendBin = protocol_pro:cmdcode_pack(?CHAT_TIMES_CMD_ID,Data),
+            SendBin = write_pt:write(10007,?CMD_10007,tuple_to_list(Data)),
             sendto(Socket,SendBin);
         _Other -> io:format("connector chat_times error!~n")
     end.
@@ -306,13 +306,21 @@ online_name(_RevData,Socket,DataPid) ->
     DataPid ! {get_all_online_name,self()},
     receive
         {L} -> 
-            io:format("Get online name:~p~n",[L]),
-            Data = {?SUCCEED,L},
-            SendBin = protocol_pro:cmdcode_pack(?FNDONLINE_CMD_ID,Data),
+            io:format("Get online name:~p~n",[L]), 
+            ListLen = list_length(L),
+            Data = L,
+            SendBin = write_pt:write(10003,[{array,ListLen,[string]}],Data),
             sendto(Socket,SendBin);
 
         _Other -> ?DEBUG("no online!")
     end.
+
+list_length([]) ->
+     0; 
+
+ list_length([First | Rest]) ->
+     1 + list_length(Rest).
+
 
 sendto(Socket,Bin) ->
     gen_tcp:send(Socket,Bin).

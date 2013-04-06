@@ -9,6 +9,8 @@
 -module(server_alarm).
 -behaviour(gen_event).
 
+-export([init/1,handle_event/2,handle_call/2,
+          handle_info/2,terminate/2]).
 -include("debug_data.hrl").
 
 %%=========================================================================
@@ -19,8 +21,7 @@
 %%=========================================================================
 %% 回调函数
 %%=========================================================================
--export([init/1,handle_event/2,handle_call/2,
-          handle_info/2,terminate/2]).
+
 
 init(Args) ->
     {ok,0}.
